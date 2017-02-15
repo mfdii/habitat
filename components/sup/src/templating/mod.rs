@@ -180,4 +180,48 @@ mod test {
         let rendered = template.render("t", &data).unwrap();
         assert_eq!(rendered, "/hab/pkgs/neurosis/redis/2000/20160222201258");
     }
+
+    pub fn root() -> PathBuf {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests")
+    }
+
+    pub fn fixtures() -> PathBuf {
+        root().join("fixtures")
+    }
+
+    use toml;
+    use toml::Value;
+    use serde_json;
+    use std::fs::File;
+    use std::io::Read;
+
+    #[test]
+    fn deserialize_more_toml() {
+        let mut file = File::open(fixtures().join("config.toml")).unwrap();
+        let mut config = String::new();
+        match file.read_to_string(&mut config) {
+            Ok(_) => {
+                let mut toml_parser = toml::Parser::new(&config);
+                let mut toml = toml_parser.parse().unwrap();
+                let data = convert::toml_to_json(toml::Value::Table(toml));
+                serde_json::from_value::<ServiceConfig>(data).unwrap();
+            }
+            Err(e) => println!("Error: {}", e),
+        }
+    }
+
+    #[test]
+    fn deserialize_even_more_toml() {
+        let mut file = File::open(fixtures().join("another_config.toml")).unwrap();
+        let mut config = String::new();
+        match file.read_to_string(&mut config) {
+            Ok(_) => {
+                let mut toml_parser = toml::Parser::new(&config);
+                let mut toml = toml_parser.parse().unwrap();
+                let data = convert::toml_to_json(toml::Value::Table(toml));
+                serde_json::from_value::<ServiceConfig>(data).unwrap();
+            }
+            Err(e) => println!("Error: {}", e),
+        }
+    }
 }
