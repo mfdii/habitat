@@ -29,6 +29,7 @@ use std::str::FromStr;
 use ansi_term::Colour::{Yellow, Red, Green};
 use butterfly;
 use butterfly::rumor::service::Service as ServiceRumor;
+use common::ui::UI;
 use hcore::fs::FS_ROOT_PATH;
 use hcore::service::ServiceGroup;
 use hcore::crypto::hash;
@@ -41,6 +42,7 @@ pub use self::config::ServiceConfig;
 pub use self::health::{HealthCheck, SmokeCheck};
 use self::hooks::{HOOK_PERMISSIONS, HookTable, HookType};
 use error::{Error, Result, SupError};
+use command::start::{install_package, maybe_install_newer_package};
 use fs;
 use manager::ManagerConfig;
 use manager::signals;
@@ -54,6 +56,7 @@ static DEFAULT_GROUP: &'static str = "default";
 const HABITAT_PACKAGE_INFO_NAME: &'static str = "habitat_package_info";
 const HABITAT_PACKAGE_INFO_DESC: &'static str = "package version information";
 
+#[derive(Debug)]
 pub struct ServiceSpec {
     pub ident: PackageIdent,
     pub group: String,
@@ -170,6 +173,28 @@ impl Service {
             topology: spec.topology,
             update_strategy: spec.update_strategy,
         })
+    }
+
+    pub fn load(spec: ServiceSpec, mgr_cfg: &ManagerConfig) -> Result<Service> {
+        outputln!("In Service::load, y'all with spec: {:?}", &spec);
+        let mut ui = UI::default();
+        let package = match PackageInstall::load(&spec.ident, Some(&Path::new(&*FS_ROOT_PATH))) {
+            Ok(package) => {
+                match spec.update_strategy {
+                    UpdateStrategy::AtOnce | UpdateStrategy::Rolling => {
+                        try!(maybe_install_newer_package(&mut ui, &spec, package))
+                    }
+                    UpdateStrategy::None => package,
+                }
+            }
+            Err(_) => {
+                outputln!("Package {} not found locally, installing from {}",
+                          Yellow.bold().paint(spec.ident.to_string()),
+                          &spec.depot_url);
+                try!(install_package(&mut ui, &spec.depot_url, &spec.ident))
+            }
+        };
+        Self::new(package, spec, mgr_cfg)
     }
 
     pub fn config_root(&self) -> &Path {

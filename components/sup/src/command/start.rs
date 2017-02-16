@@ -63,14 +63,6 @@ use manager::{Service, ServiceSpec, UpdateStrategy};
 
 static LOGKEY: &'static str = "CS";
 
-/// Creates a [Package](../../pkg/struct.Package.html), then passes it to the run method of the
-/// selected [topology](../../topology).
-///
-/// # Failures
-///
-/// * Fails if it cannot find a package with the given name
-/// * Fails if the `run` method for the topology fails
-/// * Fails if an unknown topology was specified on the command line
 pub fn package(cfg: ManagerConfig, spec: ServiceSpec, local_artifact: Option<&str>) -> Result<()> {
     let mut ui = UI::default();
     if !am_i_root() {
@@ -81,78 +73,64 @@ pub fn package(cfg: ManagerConfig, spec: ServiceSpec, local_artifact: Option<&st
         return Err(sup_error!(Error::RootRequired));
     }
 
-    match PackageInstall::load(&spec.ident, Some(&Path::new(&*FS_ROOT_PATH))) {
-        Ok(mut package) => {
-            match spec.update_strategy {
-                UpdateStrategy::None => {}
-                _ => {
-                    outputln!("Checking Depot for newer versions...");
-                    // It is important to pass `spec.ident` to `show_package()` instead
-                    // of the package identifier of the loaded package. This will ensure that
-                    // if the operator starts a package while specifying a version number, they
-                    // will only automatically receive release updates for the started package.
-                    //
-                    // If the operator does not specify a version number they will
-                    // automatically receive updates for any releases, regardless of version
-                    // number, for the started  package.
-                    let depot_client = try!(Client::new(&spec.depot_url, PRODUCT, VERSION, None));
-                    let latest_pkg_data = try!(depot_client.show_package(&spec.ident));
-                    let latest_ident: PackageIdent = latest_pkg_data.get_ident().clone().into();
-                    if &latest_ident > package.ident() {
-                        outputln!("Downloading latest version from Depot: {}", latest_ident);
-                        let new_pkg_data = try!(install::start(&mut ui,
-                                                               &spec.depot_url,
-                                                               &latest_ident.to_string(),
-                                                               PRODUCT,
-                                                               VERSION,
-                                                               Path::new(&*FS_ROOT_PATH),
-                                                               &cache_artifact_path(None),
-                                                               false));
-                        package = try!(PackageInstall::load(&new_pkg_data, Some(&*FS_ROOT_PATH)));
-                    } else {
-                        outputln!("Already running latest.");
-                    };
-                }
-            }
-            start_package(package, cfg, spec)
-        }
-        Err(_) => {
-            outputln!("{} is not installed",
-                      Yellow.bold().paint(spec.ident.to_string()));
-            let new_pkg_data = match local_artifact {
-                Some(artifact) => {
-                    try!(install::start(&mut ui,
-                                        &spec.depot_url,
-                                        &artifact,
-                                        PRODUCT,
-                                        VERSION,
-                                        Path::new(&*FS_ROOT_PATH),
-                                        &cache_artifact_path(None),
-                                        false))
-                }
-                None => {
-                    outputln!("Searching for {} in remote {}",
-                              Yellow.bold().paint(spec.ident.to_string()),
-                              &spec.depot_url);
-                    try!(install::start(&mut ui,
-                                        &spec.depot_url,
-                                        &spec.ident.to_string(),
-                                        PRODUCT,
-                                        VERSION,
-                                        Path::new(&*FS_ROOT_PATH),
-                                        &cache_artifact_path(None),
-                                        false))
-                }
-            };
-            let package = try!(PackageInstall::load(&new_pkg_data, Some(&*FS_ROOT_PATH)));
-            start_package(package, cfg, spec)
-        }
+    if let Some(artifact) = local_artifact {
+        outputln!("Installing local artifact {}",
+                  Yellow.bold().paint(artifact));
+        try!(install::start(&mut ui,
+                            &spec.depot_url,
+                            artifact,
+                            PRODUCT,
+                            VERSION,
+                            Path::new(&*FS_ROOT_PATH),
+                            &cache_artifact_path(None),
+                            false));
     }
+
+    start_package(cfg, spec)
 }
 
-fn start_package(package: PackageInstall, cfg: ManagerConfig, spec: ServiceSpec) -> Result<()> {
-    let service = try!(Service::new(package, spec, &cfg));
+fn start_package(cfg: ManagerConfig, spec: ServiceSpec) -> Result<()> {
+    let service = try!(Service::load(spec, &cfg));
     let mut manager = try!(Manager::new(cfg));
     try!(manager.add_service(service));
     manager.run()
+}
+
+pub fn install_package(ui: &mut UI,
+                       depot_url: &str,
+                       ident: &PackageIdent)
+                       -> Result<PackageInstall> {
+    let fs_root_path = Path::new(&*FS_ROOT_PATH);
+    let installed_ident = try!(install::start(ui,
+                                              depot_url,
+                                              &ident.to_string(),
+                                              PRODUCT,
+                                              VERSION,
+                                              fs_root_path,
+                                              &cache_artifact_path(None),
+                                              false));
+    Ok(try!(PackageInstall::load(&installed_ident, Some(&fs_root_path))))
+}
+
+pub fn maybe_install_newer_package(ui: &mut UI,
+                                   spec: &ServiceSpec,
+                                   current: PackageInstall)
+                                   -> Result<PackageInstall> {
+    let latest_ident: PackageIdent = {
+        let depot_client = try!(Client::new(&spec.depot_url, PRODUCT, VERSION, None));
+        try!(depot_client.show_package(&spec.ident)).get_ident().clone().into()
+    };
+
+    if &latest_ident > current.ident() {
+        outputln!("Newer version of {} detected. Installing {} from {}",
+                  spec.ident,
+                  latest_ident,
+                  spec.depot_url);
+        install_package(ui, &spec.depot_url, &latest_ident)
+    } else {
+        outputln!("Confirmed latest version of {} is {}",
+                  spec.ident,
+                  current.ident());
+        Ok(current)
+    }
 }
